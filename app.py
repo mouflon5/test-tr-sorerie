@@ -4,6 +4,7 @@ import plotly.express as px
 import pandas as pd
 from datetime import datetime, timedelta
 from monte_carlo import render_monte_carlo_tab
+from sarimax_forecast import render_sarimax_tab
 
 # =============================================
 # Page config
@@ -174,7 +175,7 @@ st.markdown("")
 # =============================================
 # Tabs
 # =============================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Waterfall", "📈 Solde projeté", "🍩 Répartitions", "📋 Données", "🎲 Monte Carlo"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Waterfall", "📈 Solde projeté", "🍩 Répartitions", "📋 Données", "🎲 Monte Carlo", "📐 SARIMAX"])
 
 # =============================================
 # TAB 1: Waterfall
@@ -404,6 +405,12 @@ with tab4:
 # =============================================
 with tab5:
     render_monte_carlo_tab(df, solde_initial, seuil_critique)
+
+# =============================================
+# TAB 6: SARIMAX
+# =============================================
+with tab6:
+    render_sarimax_tab(df, solde_initial, seuil_critique)
 
 # =============================================
 # Footer
