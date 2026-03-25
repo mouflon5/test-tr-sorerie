@@ -8,7 +8,8 @@ import plotly.graph_objects as go
 import plotly.express as px
 import streamlit as st
 from statsmodels.tsa.statespace.sarimax import SARIMAX
-from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.stattools import adfuller, acf, pacf
+from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.stats.diagnostic import acorr_ljungbox
 import warnings
 warnings.filterwarnings("ignore")
@@ -469,26 +470,266 @@ def render_sarimax_tab(df_dashboard: pd.DataFrame, solde_initial: float, seuil_c
         st.plotly_chart(fig_exog, use_container_width=True)
 
     # ------------------------------------------
-    # Chart 3: Residuals diagnostics
+    # Decomposition & Diagnostics section
     # ------------------------------------------
-    with st.expander("🔍 Diagnostics des résidus"):
+    st.markdown("---")
+    st.markdown("##### 🔬 Analyse de la série temporelle — Décomposition, cycles et résidus")
+
+    # === Seasonal decomposition ===
+    st.markdown("###### 📉 Décomposition saisonnière (STL)")
+    st.caption("Décomposition additive de la série des flux nets en tendance, saisonnalité et résidus.")
+
+    try:
+        series_for_decomp = pd.Series(
+            df_hist["Flux_Net_k$"].values,
+            index=pd.date_range(df_hist["Date"].iloc[0], periods=len(df_hist), freq="W-MON")
+        )
+        decomp = seasonal_decompose(series_for_decomp, model="additive", period=4)
+
+        from plotly.subplots import make_subplots
+        fig_decomp = make_subplots(
+            rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.04,
+            subplot_titles=("Série observée (flux nets)", "Tendance", "Saisonnalité (~4 sem.)", "Résidus / Bruit")
+        )
+
+        decomp_dates = series_for_decomp.index
+
+        fig_decomp.add_trace(go.Scatter(
+            x=decomp_dates, y=decomp.observed,
+            mode="lines", line=dict(color="#2E75B6", width=1.2), name="Observé",
+            hovertemplate="%{x|%Y-%m-%d}<br>Flux: %{y:.1f} k$<extra></extra>"
+        ), row=1, col=1)
+
+        fig_decomp.add_trace(go.Scatter(
+            x=decomp_dates, y=decomp.trend,
+            mode="lines", line=dict(color="#76933C", width=2.5), name="Tendance",
+            hovertemplate="%{x|%Y-%m-%d}<br>Tendance: %{y:.1f} k$<extra></extra>"
+        ), row=2, col=1)
+        # Add zero line on trend
+        fig_decomp.add_hline(y=0, row=2, col=1, line_color="#ccc", line_width=0.5)
+
+        fig_decomp.add_trace(go.Scatter(
+            x=decomp_dates, y=decomp.seasonal,
+            mode="lines", line=dict(color="#E46C0A", width=1.5), name="Saisonnalité",
+            hovertemplate="%{x|%Y-%m-%d}<br>Saisonnier: %{y:.1f} k$<extra></extra>"
+        ), row=3, col=1)
+        fig_decomp.add_hline(y=0, row=3, col=1, line_color="#ccc", line_width=0.5)
+
+        # Residuals with color coding
+        resid_decomp = decomp.resid.dropna()
+        colors_resid = ["#C0504D" if abs(v) > 2 * resid_decomp.std() else "#8DB4E2" for v in resid_decomp]
+        fig_decomp.add_trace(go.Bar(
+            x=resid_decomp.index, y=resid_decomp.values,
+            marker_color=colors_resid, name="Résidus",
+            hovertemplate="%{x|%Y-%m-%d}<br>Résidu: %{y:.1f} k$<extra></extra>"
+        ), row=4, col=1)
+        fig_decomp.add_hline(y=0, row=4, col=1, line_color="#999", line_width=0.5)
+        fig_decomp.add_hline(y=2*resid_decomp.std(), row=4, col=1,
+                             line_dash="dot", line_color="#E46C0A", line_width=1)
+        fig_decomp.add_hline(y=-2*resid_decomp.std(), row=4, col=1,
+                             line_dash="dot", line_color="#E46C0A", line_width=1)
+
+        fig_decomp.update_layout(
+            height=700, showlegend=False, plot_bgcolor="#fafbfc",
+            margin=dict(t=40, b=30, l=60, r=40),
+        )
+        for i in range(1, 5):
+            fig_decomp.update_yaxes(gridcolor="#e8e8e8", row=i, col=1)
+
+        st.plotly_chart(fig_decomp, use_container_width=True)
+
+        # Decomposition stats
+        dc1, dc2, dc3, dc4 = st.columns(4)
+        trend_vals = decomp.trend.dropna()
+        seasonal_amplitude = decomp.seasonal.max() - decomp.seasonal.min()
+        dc1.metric("Tendance début → fin",
+                   f"{trend_vals.iloc[-1] - trend_vals.iloc[0]:.1f} k$",
+                   delta="Dégradation" if trend_vals.iloc[-1] < trend_vals.iloc[0] else "Amélioration",
+                   delta_color="inverse" if trend_vals.iloc[-1] < trend_vals.iloc[0] else "normal")
+        dc2.metric("Amplitude saisonnière", f"{seasonal_amplitude:.1f} k$",
+                   help="Écart entre le pic et le creux du cycle saisonnier")
+        dc3.metric("Écart-type résidus (décomp.)", f"{resid_decomp.std():.1f} k$")
+        dc4.metric("% variance expliquée par tendance+saison.",
+                   f"{(1 - resid_decomp.var() / series_for_decomp.var()) * 100:.1f}%",
+                   help="Part de la variance totale expliquée par la tendance et la saisonnalité")
+
+    except Exception as e:
+        st.warning(f"Décomposition saisonnière non disponible : {e}")
+
+    # === ACF / PACF ===
+    st.markdown("---")
+    st.markdown("###### 📊 Autocorrélations (ACF / PACF)")
+    st.caption(
+        "L'ACF montre les corrélations entre la série et ses retards. "
+        "La PACF isole la corrélation directe à chaque retard. "
+        "Les pics significatifs indiquent les ordres AR et MA du modèle."
+    )
+
+    try:
+        flux_clean = df_hist["Flux_Net_k$"].dropna().values
+        max_lags = min(30, len(flux_clean) // 3)
+        acf_vals = acf(flux_clean, nlags=max_lags, fft=True)
+        pacf_vals = pacf(flux_clean, nlags=max_lags)
+        ci_bound = 1.96 / np.sqrt(len(flux_clean))
+
+        col_acf, col_pacf = st.columns(2)
+
+        with col_acf:
+            fig_acf = go.Figure()
+            lags = list(range(len(acf_vals)))
+            colors_acf = ["#C0504D" if abs(v) > ci_bound and i > 0 else "#2E75B6" for i, v in enumerate(acf_vals)]
+            fig_acf.add_trace(go.Bar(
+                x=lags, y=acf_vals, marker_color=colors_acf, name="ACF",
+                hovertemplate="Retard %{x}<br>ACF: %{y:.3f}<extra></extra>"
+            ))
+            fig_acf.add_hline(y=ci_bound, line_dash="dash", line_color="#E46C0A", line_width=1)
+            fig_acf.add_hline(y=-ci_bound, line_dash="dash", line_color="#E46C0A", line_width=1)
+            fig_acf.add_hline(y=0, line_color="#999", line_width=0.5)
+
+            # Annotate seasonal lags
+            for lag in [4, 8, 12, 16, 20, 24]:
+                if lag < len(acf_vals) and abs(acf_vals[lag]) > ci_bound:
+                    fig_acf.add_annotation(x=lag, y=acf_vals[lag], text=f"S={lag}",
+                                          showarrow=True, arrowhead=2, arrowsize=0.8,
+                                          font=dict(size=8, color="#E46C0A"))
+
+            fig_acf.update_layout(
+                title="ACF — Autocorrélation", height=320,
+                xaxis_title="Retard (semaines)",
+                plot_bgcolor="#fafbfc", margin=dict(t=40, b=40, l=50, r=20),
+                yaxis=dict(gridcolor="#e8e8e8"),
+            )
+            st.plotly_chart(fig_acf, use_container_width=True)
+
+        with col_pacf:
+            fig_pacf = go.Figure()
+            colors_pacf = ["#C0504D" if abs(v) > ci_bound and i > 0 else "#76933C" for i, v in enumerate(pacf_vals)]
+            fig_pacf.add_trace(go.Bar(
+                x=lags, y=pacf_vals, marker_color=colors_pacf, name="PACF",
+                hovertemplate="Retard %{x}<br>PACF: %{y:.3f}<extra></extra>"
+            ))
+            fig_pacf.add_hline(y=ci_bound, line_dash="dash", line_color="#E46C0A", line_width=1)
+            fig_pacf.add_hline(y=-ci_bound, line_dash="dash", line_color="#E46C0A", line_width=1)
+            fig_pacf.add_hline(y=0, line_color="#999", line_width=0.5)
+
+            for lag in [4, 8, 12]:
+                if lag < len(pacf_vals) and abs(pacf_vals[lag]) > ci_bound:
+                    fig_pacf.add_annotation(x=lag, y=pacf_vals[lag], text=f"S={lag}",
+                                           showarrow=True, arrowhead=2, arrowsize=0.8,
+                                           font=dict(size=8, color="#E46C0A"))
+
+            fig_pacf.update_layout(
+                title="PACF — Autocorrélation partielle", height=320,
+                xaxis_title="Retard (semaines)",
+                plot_bgcolor="#fafbfc", margin=dict(t=40, b=40, l=50, r=20),
+                yaxis=dict(gridcolor="#e8e8e8"),
+            )
+            st.plotly_chart(fig_pacf, use_container_width=True)
+
+        st.caption(
+            "🔴 Barres rouges = significatives (hors bande de confiance 95%). "
+            "Les pics aux retards 4, 8, 12... confirment la saisonnalité ~mensuelle. "
+            "ACF → ordre MA (q). PACF → ordre AR (p)."
+        )
+
+    except Exception as e:
+        st.warning(f"Autocorrélations non disponibles : {e}")
+
+    # === Spectral / Periodogram ===
+    st.markdown("---")
+    st.markdown("###### 🌊 Analyse spectrale — Périodogramme")
+    st.caption("Identifie les fréquences dominantes (cycles récurrents) dans les flux de trésorerie.")
+
+    try:
+        flux_centered = flux_clean - flux_clean.mean()
+        n = len(flux_centered)
+        fft_vals = np.fft.rfft(flux_centered)
+        power = np.abs(fft_vals) ** 2 / n
+        freqs = np.fft.rfftfreq(n, d=1)  # en cycles/semaine
+        periods = np.where(freqs > 0, 1.0 / freqs, np.inf)
+
+        # Skip DC component (index 0)
+        mask = (freqs > 0) & (periods <= n / 2) & (periods >= 2)
+        plot_periods = periods[mask]
+        plot_power = power[mask]
+
+        fig_spectral = go.Figure()
+        fig_spectral.add_trace(go.Scatter(
+            x=plot_periods, y=plot_power,
+            mode="lines", fill="tozeroy",
+            line=dict(color="#2E75B6", width=1.5),
+            fillcolor="rgba(46,117,182,0.15)",
+            hovertemplate="Période: %{x:.1f} sem.<br>Puissance: %{y:.1f}<extra></extra>"
+        ))
+
+        # Annotate top peaks
+        top_k = 4
+        top_idx = np.argsort(plot_power)[-top_k:]
+        for idx in top_idx:
+            p = plot_periods[idx]
+            pw = plot_power[idx]
+            label = ""
+            if 3.5 <= p <= 4.5:
+                label = f"~Mensuel ({p:.1f} sem.)"
+            elif 1.8 <= p <= 2.2:
+                label = f"~Bi-hebdo ({p:.1f} sem.)"
+            elif 12 <= p <= 14:
+                label = f"~Trimestriel ({p:.1f} sem.)"
+            elif 6 <= p <= 7:
+                label = f"~6 sem. ({p:.1f})"
+            else:
+                label = f"{p:.1f} sem."
+            fig_spectral.add_annotation(
+                x=p, y=pw, text=label,
+                showarrow=True, arrowhead=2, arrowsize=0.8, ay=-30,
+                font=dict(size=9, color="#C0504D")
+            )
+
+        fig_spectral.update_layout(
+            height=350,
+            xaxis_title="Période (semaines)",
+            yaxis_title="Puissance spectrale",
+            plot_bgcolor="#fafbfc",
+            xaxis=dict(gridcolor="#e8e8e8", type="log",
+                       tickvals=[2, 4, 6, 8, 13, 26, 52],
+                       ticktext=["2s", "4s\n(mois)", "6s", "8s", "13s\n(trim)", "26s\n(sem)", "52s\n(an)"]),
+            yaxis=dict(gridcolor="#e8e8e8"),
+            margin=dict(t=20, b=50, l=60, r=40),
+        )
+        st.plotly_chart(fig_spectral, use_container_width=True)
+
+        st.caption(
+            "Les pics identifient les cycles dominants. Un pic à ~4 semaines confirme le cycle mensuel "
+            "(facturation/paie). Un pic à ~2 semaines reflète le cycle bi-hebdomadaire de paie. "
+            "Un pic à ~13 semaines indique un effet trimestriel (loyer, acomptes fiscaux)."
+        )
+
+    except Exception as e:
+        st.warning(f"Analyse spectrale non disponible : {e}")
+
+    # === Enhanced residuals diagnostics ===
+    st.markdown("---")
+    st.markdown("###### 🔍 Diagnostics des résidus du modèle SARIMAX")
+
+    with st.expander("Voir les diagnostics détaillés des résidus", expanded=False):
         col_d1, col_d2 = st.columns(2)
 
         with col_d1:
             fig_res = go.Figure()
-            fig_res.add_trace(go.Scatter(
-                y=residuals, mode="lines",
-                line=dict(color="#2E75B6", width=1),
-                name="Résidus"
+            resid_colors = ["#C0504D" if abs(r) > 2 * resid_std else "#2E75B6" for r in residuals]
+            fig_res.add_trace(go.Bar(
+                y=residuals, marker_color=resid_colors, name="Résidus",
+                hovertemplate="Obs %{x}<br>Résidu: %{y:.1f} k$<extra></extra>"
             ))
             fig_res.add_hline(y=0, line_color="#999")
             fig_res.add_hline(y=2*resid_std, line_dash="dot", line_color="#E46C0A",
-                              annotation_text="+2σ", annotation_font=dict(size=9))
+                              annotation_text=f"+2σ ({2*resid_std:.1f})", annotation_font=dict(size=9))
             fig_res.add_hline(y=-2*resid_std, line_dash="dot", line_color="#E46C0A",
-                              annotation_text="-2σ", annotation_font=dict(size=9))
+                              annotation_text=f"-2σ ({-2*resid_std:.1f})", annotation_font=dict(size=9))
             fig_res.update_layout(
-                title="Résidus dans le temps", height=300,
+                title="Résidus SARIMAX dans le temps", height=320,
                 plot_bgcolor="#fafbfc", margin=dict(t=40, b=30),
+                xaxis_title="Observation", yaxis_title="Résidu (k$)",
             )
             st.plotly_chart(fig_res, use_container_width=True)
 
@@ -498,12 +739,89 @@ def render_sarimax_tab(df_dashboard: pd.DataFrame, solde_initial: float, seuil_c
                 x=residuals, nbinsx=40,
                 marker_color="#2E75B6", opacity=0.7, name="Résidus"
             ))
+            # Overlay normal curve
+            x_norm = np.linspace(residuals.min(), residuals.max(), 100)
+            y_norm = (1 / (resid_std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_norm - np.mean(residuals)) / resid_std) ** 2)
+            # Scale to match histogram
+            bin_width = (residuals.max() - residuals.min()) / 40
+            y_norm_scaled = y_norm * len(residuals) * bin_width
+            fig_hist_res.add_trace(go.Scatter(
+                x=x_norm, y=y_norm_scaled,
+                mode="lines", line=dict(color="#C0504D", width=2, dash="dash"),
+                name="Normale théorique"
+            ))
             fig_hist_res.add_vline(x=0, line_color="red", line_width=1)
             fig_hist_res.update_layout(
-                title="Distribution des résidus", height=300,
+                title="Distribution des résidus vs Normale", height=320,
                 plot_bgcolor="#fafbfc", margin=dict(t=40, b=30),
+                xaxis_title="Résidu (k$)", yaxis_title="Fréquence",
             )
             st.plotly_chart(fig_hist_res, use_container_width=True)
+
+        # QQ-ish plot and residual ACF
+        col_d3, col_d4 = st.columns(2)
+
+        with col_d3:
+            # Residual ACF
+            resid_clean_arr = residuals[~np.isnan(residuals)] if hasattr(residuals, '__iter__') else np.array([residuals])
+            if len(resid_clean_arr) > 10:
+                resid_acf = acf(resid_clean_arr, nlags=min(20, len(resid_clean_arr) // 3), fft=True)
+                ci_r = 1.96 / np.sqrt(len(resid_clean_arr))
+                fig_racf = go.Figure()
+                r_colors = ["#C0504D" if abs(v) > ci_r and i > 0 else "#8DB4E2" for i, v in enumerate(resid_acf)]
+                fig_racf.add_trace(go.Bar(x=list(range(len(resid_acf))), y=resid_acf, marker_color=r_colors))
+                fig_racf.add_hline(y=ci_r, line_dash="dash", line_color="#E46C0A", line_width=1)
+                fig_racf.add_hline(y=-ci_r, line_dash="dash", line_color="#E46C0A", line_width=1)
+                fig_racf.add_hline(y=0, line_color="#999", line_width=0.5)
+                fig_racf.update_layout(
+                    title="ACF des résidus", height=300,
+                    xaxis_title="Retard", plot_bgcolor="#fafbfc",
+                    margin=dict(t=40, b=40, l=50, r=20),
+                )
+                st.plotly_chart(fig_racf, use_container_width=True)
+                st.caption("Si les résidus sont bien du bruit blanc, aucune barre ne devrait dépasser les bandes orange.")
+
+        with col_d4:
+            # Residuals vs fitted
+            fitted = results.fittedvalues
+            fitted_arr = np.array(fitted).flatten()
+            resid_arr = np.array(residuals).flatten()
+            if len(fitted_arr) == len(resid_arr):
+                fig_rvf = go.Figure()
+                fig_rvf.add_trace(go.Scatter(
+                    x=fitted_arr, y=resid_arr,
+                    mode="markers", marker=dict(color="#2E75B6", size=4, opacity=0.6),
+                    hovertemplate="Ajusté: %{x:.1f}<br>Résidu: %{y:.1f}<extra></extra>"
+                ))
+                fig_rvf.add_hline(y=0, line_color="#999")
+                fig_rvf.add_hline(y=2*resid_std, line_dash="dot", line_color="#E46C0A", line_width=1)
+                fig_rvf.add_hline(y=-2*resid_std, line_dash="dot", line_color="#E46C0A", line_width=1)
+                fig_rvf.update_layout(
+                    title="Résidus vs Valeurs ajustées", height=300,
+                    xaxis_title="Valeur ajustée (k$)", yaxis_title="Résidu (k$)",
+                    plot_bgcolor="#fafbfc", margin=dict(t=40, b=40, l=50, r=20),
+                )
+                st.plotly_chart(fig_rvf, use_container_width=True)
+                st.caption("Un bon modèle montre des résidus dispersés sans pattern. Un entonnoir indiquerait de l'hétéroscédasticité.")
+
+        # Summary stats
+        n_outliers = int(np.sum(np.abs(residuals) > 2 * resid_std))
+        skew = float(pd.Series(residuals).skew())
+        kurt = float(pd.Series(residuals).kurtosis())
+
+        rs1, rs2, rs3, rs4 = st.columns(4)
+        rs1.metric("Moyenne résidus", f"{np.mean(residuals):.2f} k$",
+                   help="Devrait être proche de 0 (modèle non biaisé)")
+        rs2.metric("Outliers (>2σ)", f"{n_outliers} / {len(residuals)}",
+                   help="Observations avec résidu supérieur à 2 écarts-types")
+        rs3.metric("Asymétrie (skew)", f"{skew:.2f}",
+                   delta="OK" if abs(skew) < 0.5 else "Asymétrique",
+                   delta_color="normal" if abs(skew) < 0.5 else "inverse",
+                   help="0 = symétrique. >0.5 ou <-0.5 = distribution asymétrique")
+        rs4.metric("Kurtosis", f"{kurt:.2f}",
+                   delta="OK" if abs(kurt) < 1 else "Queues épaisses" if kurt > 1 else "Queues fines",
+                   delta_color="normal" if abs(kurt) < 1 else "inverse",
+                   help="0 = normal. >0 = queues plus épaisses que la normale")
 
     # ------------------------------------------
     # Forecast table
