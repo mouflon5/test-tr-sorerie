@@ -3,6 +3,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
 from datetime import datetime, timedelta
+from monte_carlo import render_monte_carlo_tab
 
 # =============================================
 # Page config
@@ -173,7 +174,7 @@ st.markdown("")
 # =============================================
 # Tabs
 # =============================================
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Waterfall", "📈 Solde projeté", "🍩 Répartitions", "📋 Données"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Waterfall", "📈 Solde projeté", "🍩 Répartitions", "📋 Données", "🎲 Monte Carlo"])
 
 # =============================================
 # TAB 1: Waterfall
@@ -397,6 +398,12 @@ with tab4:
     csv = df.to_csv(index=False, sep=";", decimal=",")
     st.download_button("📥 Télécharger les données (CSV)", csv,
                        file_name="tresorerie_pme_13sem.csv", mime="text/csv")
+
+# =============================================
+# TAB 5: Monte Carlo
+# =============================================
+with tab5:
+    render_monte_carlo_tab(df, solde_initial, seuil_critique)
 
 # =============================================
 # Footer
