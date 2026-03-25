@@ -391,10 +391,17 @@ def render_sarimax_tab(df_dashboard: pd.DataFrame, solde_initial: float, seuil_c
                      annotation_font=dict(color="red", size=10))
     fig_fc.add_hline(y=0, line_color="#999", line_width=1)
 
-    # Vertical line at forecast start
-    fig_fc.add_vline(x=str(forecast_dates[0]), line_dash="dot", line_color="#999",
-                     annotation_text="Début prévision", annotation_position="top left",
-                     annotation_font=dict(size=9, color="#666"))
+    # Vertical line at forecast start — use shape instead of add_vline for date compatibility
+    fc_start = forecast_dates[0].isoformat()
+    fig_fc.add_shape(
+        type="line", x0=fc_start, x1=fc_start, y0=0, y1=1,
+        yref="paper", line=dict(color="#999", width=1, dash="dot"),
+    )
+    fig_fc.add_annotation(
+        x=fc_start, y=1, yref="paper",
+        text="Début prévision", showarrow=False,
+        font=dict(size=9, color="#666"), yshift=10,
+    )
 
     fig_fc.update_layout(
         height=520,
