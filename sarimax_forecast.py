@@ -217,14 +217,26 @@ def render_sarimax_tab(df_dashboard: pd.DataFrame, solde_initial: float, seuil_c
     # ------------------------------------------
     alpha = 1 - ci_level / 100
     forecast_obj = results.get_forecast(steps=horizon, exog=exog_forecast, alpha=alpha)
-    forecast_mean = forecast_obj.predicted_mean
-    forecast_ci = forecast_obj.conf_int(alpha=alpha)
+    forecast_mean_raw = forecast_obj.predicted_mean
+    forecast_ci_raw = forecast_obj.conf_int(alpha=alpha)
+
+    # Robust extraction — works whether statsmodels returns Series/DataFrame or ndarray
+    forecast_mean_vals = np.array(forecast_mean_raw).flatten()
+
+    if hasattr(forecast_ci_raw, 'values'):
+        # DataFrame — extract columns by position
+        ci_array = forecast_ci_raw.values
+    else:
+        # ndarray
+        ci_array = np.array(forecast_ci_raw)
+    ci_low_vals = ci_array[:, 0]
+    ci_high_vals = ci_array[:, 1]
 
     # Cumulative solde from forecast
-    last_solde = df_hist["Solde_k$"].iloc[-1]
-    solde_forecast_mean = last_solde + np.cumsum(forecast_mean)
-    solde_forecast_low = last_solde + np.cumsum(forecast_ci.iloc[:, 0].values)
-    solde_forecast_high = last_solde + np.cumsum(forecast_ci.iloc[:, 1].values)
+    last_solde = float(df_hist["Solde_k$"].iloc[-1])
+    solde_forecast_mean = last_solde + np.cumsum(forecast_mean_vals)
+    solde_forecast_low = last_solde + np.cumsum(ci_low_vals)
+    solde_forecast_high = last_solde + np.cumsum(ci_high_vals)
 
     forecast_dates = pd.date_range(df_hist["Date"].iloc[-1] + pd.Timedelta(weeks=1),
                                    periods=horizon, freq="W-MON")
@@ -240,7 +252,7 @@ def render_sarimax_tab(df_dashboard: pd.DataFrame, solde_initial: float, seuil_c
 
     for sim in range(n_mc):
         noise = rng.normal(0, resid_std, horizon)
-        mc_flux[sim] = forecast_mean + noise
+        mc_flux[sim] = forecast_mean_vals + noise
         mc_solde[sim] = last_solde + np.cumsum(mc_flux[sim])
 
     mc_median = np.median(mc_solde, axis=0)
@@ -471,8 +483,8 @@ def render_sarimax_tab(df_dashboard: pd.DataFrame, solde_initial: float, seuil_c
     fc_table = pd.DataFrame({
         "Semaine": forecast_labels,
         "Date": forecast_dates.strftime("%Y-%m-%d"),
-        "Flux net prévu (k$)": forecast_mean.round(0).astype(int),
-        "Solde prévu (k$)": solde_forecast_mean.round(0).astype(int),
+        "Flux net prévu (k$)": np.round(forecast_mean_vals, 0).astype(int),
+        "Solde prévu (k$)": np.round(solde_forecast_mean, 0).astype(int),
         f"Solde IC bas {ci_level}%": mc_p_low.round(0).astype(int),
         f"Solde IC haut {ci_level}%": mc_p_high.round(0).astype(int),
         "Médiane MC (k$)": mc_median.round(0).astype(int),
@@ -512,7 +524,7 @@ def render_sarimax_tab(df_dashboard: pd.DataFrame, solde_initial: float, seuil_c
     st.markdown("##### 🎛️ Analyse de sensibilité — Impact des exogènes sur le solde final")
 
     # Vary each exogenous variable and observe impact on final solde
-    base_final = solde_forecast_mean.iloc[-1] if hasattr(solde_forecast_mean, 'iloc') else solde_forecast_mean[-1]
+    base_final = float(solde_forecast_mean[-1])
 
     sensitivities = []
     for var_name, var_idx, var_range, var_unit in [
@@ -525,7 +537,7 @@ def render_sarimax_tab(df_dashboard: pd.DataFrame, solde_initial: float, seuil_c
             exog_test[:, var_idx] = val
             try:
                 fc_test = results.get_forecast(steps=horizon, exog=exog_test)
-                test_final = last_solde + np.cumsum(fc_test.predicted_mean)[-1]
+                test_final = last_solde + np.cumsum(np.array(fc_test.predicted_mean))[-1]
                 sensitivities.append({
                     "Variable": f"{var_name} ({var_unit})" if var_unit else var_name,
                     "Valeur": val,
