@@ -282,11 +282,35 @@ def render_sarimax_tab(df_dashboard: pd.DataFrame, solde_initial: float, seuil_c
     # Model coefficients
     # ------------------------------------------
     with st.expander("📋 Coefficients du modèle et interprétation"):
+        # Robust extraction — params can be Series (with .index) or ndarray
+        param_values = np.array(results.params).flatten()
+        pvalue_values = np.array(results.pvalues).flatten()
+
+        if hasattr(results.params, 'index'):
+            param_names = list(results.params.index)
+        else:
+            # Fallback: generate generic names
+            exog_names = ["DSO_jours", "Backlog_k$", "PMI_Quebec", "Sem_Paie"]
+            param_names = []
+            # SARIMAX(1,1,1)(1,0,1,4) typical param order:
+            # intercept (if any), ar.L1, ma.L1, ar.S.L4, ma.S.L4, x1..x4, sigma2
+            n_params = len(param_values)
+            base_names = ["intercept", "ar.L1", "ma.L1", "ar.S.L4", "ma.S.L4"]
+            for i in range(n_params):
+                if i < len(base_names):
+                    param_names.append(base_names[i])
+                elif i < len(base_names) + len(exog_names):
+                    param_names.append(exog_names[i - len(base_names)])
+                elif i == n_params - 1:
+                    param_names.append("sigma2")
+                else:
+                    param_names.append(f"param_{i}")
+
         coef_df = pd.DataFrame({
-            "Paramètre": results.params.index,
-            "Coefficient": results.params.values.round(4),
-            "P-value": results.pvalues.values.round(4),
-            "Significatif (5%)": ["✅" if p < 0.05 else "❌" for p in results.pvalues.values],
+            "Paramètre": param_names[:len(param_values)],
+            "Coefficient": np.round(param_values, 4),
+            "P-value": np.round(pvalue_values, 4),
+            "Significatif (5%)": ["✅" if p < 0.05 else "❌" for p in pvalue_values],
         })
         st.dataframe(coef_df, use_container_width=True, hide_index=True)
 
